@@ -98,3 +98,84 @@
 (define-read-only (get-name)
   (ok (var-get token-name))
 )
+
+(define-read-only (get-symbol)
+  (ok (var-get token-symbol))
+)
+
+(define-read-only (get-decimals)
+  (ok (var-get token-decimals))
+)
+
+(define-read-only (get-balance (who principal))
+  (ok (ft-get-balance usdx who))
+)
+
+(define-read-only (get-total-supply)
+  (ok (ft-get-supply usdx))
+)
+
+(define-read-only (get-token-uri)
+  (ok (var-get token-uri))
+)
+
+(define-public (transfer
+    (amount uint)
+    (from principal)
+    (to principal)
+    (memo (optional (buff 34)))
+  )
+  (begin
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (or (is-eq from tx-sender) (is-eq from contract-caller))
+      ERR-NOT-AUTHORIZED
+    )
+    (asserts! (not (is-eq from to)) ERR-INVALID-AMOUNT)
+    (ft-transfer? usdx amount from to)
+  )
+)
+
+;; Oracle Functions
+
+(define-public (set-oracle-operator
+    (operator principal)
+    (authorized bool)
+  )
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (asserts! (not (is-eq operator tx-sender)) ERR-INVALID-AMOUNT) ;; Prevent self-modification
+    (ok (map-set oracle-operators operator authorized))
+  )
+)
+
+(define-public (update-price
+    (asset (string-ascii 10))
+    (price uint)
+    (confidence uint)
+  )
+  (begin
+    (asserts! (default-to false (map-get? oracle-operators tx-sender))
+      ERR-NOT-AUTHORIZED
+    )
+    (asserts! (> price u0) ERR-INVALID-AMOUNT)
+    (asserts! (and (>= confidence u1) (<= confidence u100)) ERR-INVALID-AMOUNT)
+    (asserts! (> (len asset) u0) ERR-INVALID-AMOUNT)
+    (ok (map-set price-feeds { asset: asset } {
+      price: price,
+      timestamp: stacks-block-height,
+      confidence: confidence,
+    }))
+  )
+)
+
+(define-read-only (get-price (asset (string-ascii 10)))
+  (let ((price-data (map-get? price-feeds { asset: asset })))
+    (match price-data
+      feed (if (< (- stacks-block-height (get timestamp feed)) MAX-PRICE-AGE)
+        (ok (get price feed))
+        ERR-ORACLE-PRICE-STALE
+      )
+      ERR-ORACLE-PRICE-STALE
+    )
+  )
+)
