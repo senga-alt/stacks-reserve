@@ -258,3 +258,112 @@
     (ok true)
   )
 )
+
+(define-public (mint-usdx
+    (vault-id uint)
+    (amount uint)
+  )
+  (let (
+      (vault (unwrap! (map-get? vaults { vault-id: vault-id }) ERR-VAULT-NOT-FOUND))
+      (stx-price (unwrap! (get-price "STX") ERR-ORACLE-PRICE-STALE))
+      (xbtc-price (unwrap! (get-price "xBTC") ERR-ORACLE-PRICE-STALE))
+      (collateral-value (+ (* (get stx-collateral vault) stx-price)
+        (* (get xbtc-collateral vault) xbtc-price)
+      ))
+      (new-debt (+ (get debt vault) amount))
+      (collateral-ratio (/ (* collateral-value u100) new-debt))
+    )
+    (asserts! (> vault-id u0) ERR-INVALID-AMOUNT)
+    (asserts! (is-eq (get owner vault) tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active vault) ERR-VAULT-NOT-FOUND)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (< amount u1000000000000) ERR-INVALID-AMOUNT)
+    ;; Prevent excessive minting
+    (asserts! (>= collateral-ratio MINIMUM-COLLATERAL-RATIO)
+      ERR-MINIMUM-COLLATERAL-RATIO
+    )
+    ;; Mint USDx tokens
+    (try! (ft-mint? usdx amount tx-sender))
+    ;; Update vault debt
+    (map-set vaults { vault-id: vault-id }
+      (merge vault {
+        debt: new-debt,
+        last-update: stacks-block-height,
+      })
+    )
+    ;; Update protocol stats
+    (var-set total-debt (+ (var-get total-debt) amount))
+    (ok true)
+  )
+)
+
+(define-public (burn-usdx
+    (vault-id uint)
+    (amount uint)
+  )
+  (let (
+      (vault (unwrap! (map-get? vaults { vault-id: vault-id }) ERR-VAULT-NOT-FOUND))
+      (user-balance (ft-get-balance usdx tx-sender))
+    )
+    (asserts! (> vault-id u0) ERR-INVALID-AMOUNT)
+    (asserts! (is-eq (get owner vault) tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active vault) ERR-VAULT-NOT-FOUND)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (>= user-balance amount) ERR-INSUFFICIENT-USDX-BALANCE)
+    (asserts! (>= (get debt vault) amount) ERR-INVALID-AMOUNT)
+    ;; Burn USDx tokens
+    (try! (ft-burn? usdx amount tx-sender))
+    ;; Update vault debt
+    (map-set vaults { vault-id: vault-id }
+      (merge vault {
+        debt: (- (get debt vault) amount),
+        last-update: stacks-block-height,
+      })
+    )
+    ;; Update protocol stats
+    (var-set total-debt (- (var-get total-debt) amount))
+    (ok true)
+  )
+)
+
+(define-public (withdraw-collateral
+    (vault-id uint)
+    (stx-amount uint)
+  )
+  (let (
+      (vault (unwrap! (map-get? vaults { vault-id: vault-id }) ERR-VAULT-NOT-FOUND))
+      (stx-price (unwrap! (get-price "STX") ERR-ORACLE-PRICE-STALE))
+      (xbtc-price (unwrap! (get-price "xBTC") ERR-ORACLE-PRICE-STALE))
+      (remaining-stx (- (get stx-collateral vault) stx-amount))
+      (remaining-collateral-value (+ (* remaining-stx stx-price) (* (get xbtc-collateral vault) xbtc-price)))
+      (debt (get debt vault))
+    )
+    (asserts! (> vault-id u0) ERR-INVALID-AMOUNT)
+    (asserts! (is-eq (get owner vault) tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active vault) ERR-VAULT-NOT-FOUND)
+    (asserts! (> stx-amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (>= (get stx-collateral vault) stx-amount)
+      ERR-INSUFFICIENT-COLLATERAL
+    )
+    ;; Check if withdrawal maintains minimum collateral ratio (if debt exists)
+    (if (> debt u0)
+      (asserts!
+        (>= (/ (* remaining-collateral-value u100) debt) MINIMUM-COLLATERAL-RATIO)
+        ERR-MINIMUM-COLLATERAL-RATIO
+      )
+      true
+    )
+    ;; Transfer collateral back to user
+    (try! (as-contract (stx-transfer? stx-amount tx-sender (get owner vault))))
+    ;; Update vault
+    (map-set vaults { vault-id: vault-id }
+      (merge vault {
+        stx-collateral: remaining-stx,
+        last-update: stacks-block-height,
+      })
+    )
+    ;; Update protocol stats
+    (var-set total-stx-collateral (- (var-get total-stx-collateral) stx-amount))
+    (ok true)
+  )
+)
